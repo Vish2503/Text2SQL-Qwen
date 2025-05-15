@@ -1,6 +1,8 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer, StoppingCriteria
+from threading import Thread, Event
 from sql import get_database_schema, execute_sql_query
 
 model_name = "Qwen/Qwen2.5-Coder-7B-Instruct-GPTQ-Int4"
@@ -22,6 +24,9 @@ class QueryRequest(BaseModel):
     query: str
     tables: list[str]
 
+class ExecuteRequest(BaseModel):
+    sql_query: str
+
 class SchemaRequest(BaseModel):
     None
 
@@ -41,15 +46,27 @@ Instructions:
 - The generated query should return all of the information asked in the question without any missing or extra information.
 - Before generating the final SQL query, please think through the steps of how to write the query. Do all the explanation before generating the final query.
 - Make sure to check the datatypes of the columns. For Example: if Date column has text datatype, do not use date functions on it, use string functions.
-- If the question has no relevance to the database provided, do not answer with any SQL query.
+- If you think some table information is missing or the database schema provided has no relevance with the question, do not answer with any SQL query.
 
 Take a deep breath and think step by step to find the correct SQL query.
 """
 
-@app.post("/generate_sql")
+
+generation_controller = {
+    "thread": None,
+    "stop_event": Event()
+}
+
+@app.get("/generate_sql")
 async def get_sql(request: QueryRequest):
     """Endpoint for generating SQL from natural language"""
     try:
+        if generation_controller["thread"] and generation_controller["thread"].is_alive():
+            generation_controller["stop_event"].set()
+            generation_controller["thread"].join(timeout=1)
+
+        generation_controller["stop_event"] = Event()
+
         question = request.query
         tables = request.tables
 
@@ -66,26 +83,45 @@ async def get_sql(request: QueryRequest):
         )
         model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
 
-        generated_ids = model.generate(
-            **model_inputs,
-            max_new_tokens=512
+
+        streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+
+        class StopOnEvent(StoppingCriteria):
+            def __init__(self, stop_event):
+                self.stop_event = stop_event
+
+            def __call__(self, *args, **kwargs):
+                return self.stop_event.is_set()
+
+        thread = Thread(
+            target=model.generate,
+            kwargs={
+                **model_inputs,
+                "max_new_tokens": 512,
+                "streamer": streamer,
+                "stopping_criteria": [StopOnEvent(generation_controller["stop_event"])]
+            }
         )
-        generated_ids = [
-            output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
-        ]
+        thread.start()
+        generation_controller["thread"] = thread
+        
+        def stream_tokens(streamer):
+            for token in streamer:
+                if generation_controller["stop_event"].is_set():
+                    break
+                yield token
 
-        response = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
+        return StreamingResponse(stream_tokens(streamer), media_type="text/plain")
+        # execute_query = None
+        # if "```sql" in response:
+        #     sql_query = response[response.rfind("```sql\n") + 7:response.rfind("```")]
+        #     execute_query = execute_sql_query(sql_query)
 
-        execute_query = None
-        if "```sql" in response:
-            sql_query = response[response.rfind("```sql\n") + 7:response.rfind("```")]
-            execute_query = execute_sql_query(sql_query)
-
-        return {
-            "status": "success",
-            "sql_query": response,
-            "execute_query": execute_query
-        }
+        # return {
+        #     "status": "success",
+        #     "sql_query": response,
+        #     "execute_query": execute_query
+        # }
         
     except HTTPException:
         raise
@@ -93,8 +129,15 @@ async def get_sql(request: QueryRequest):
         print(f"Unexpected error: {str(e)}\n")
         raise HTTPException(status_code=500, detail="Internal server error")
     
+@app.get("/execute_sql")
+def execute_sql(request: ExecuteRequest):
+    try:
+        result = execute_sql_query(request.sql_query)
+        return result
+    except Exception as e:
+        return {"error": str(e)}
 
-@app.post("/get_database_schema")
+@app.get("/get_database_schema")
 async def get_schema(request: SchemaRequest):
     return {
         "status": "success",

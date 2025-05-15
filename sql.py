@@ -33,7 +33,7 @@ class DatabaseManager:
         if self.schema:
             return self.schema
         
-        schema = {"tables": [], "relationships": []}
+        schema = []
         
         try:
             with self.get_connection() as conn:
@@ -104,14 +104,8 @@ class DatabaseManager:
                                 "column": fk[0],
                                 "references": f"{fk[1]}({fk[2]})"
                             })
-                            schema["relationships"].append({
-                                "source_table": table,
-                                "source_column": fk[0],
-                                "target_table": fk[1],
-                                "target_column": fk[2]
-                            })
 
-                        schema["tables"].append({
+                        schema.append({
                             "name": table,
                             "columns": columns,
                             "primary_keys": primary_keys,
@@ -152,7 +146,7 @@ class DatabaseManager:
         """Return database_schema as formatted string"""
         schema = self.get_database_schema()
         schema_text = []
-        for table in schema["tables"]:
+        for table in schema:
             if filtered_tables is None or table['name'] in filtered_tables:
                 schema_text.append(f"Table: {table['name']}")
                 

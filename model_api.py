@@ -3,7 +3,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer, StoppingCriteria
 from threading import Thread, Event
-from sql import get_database_schema, execute_sql_query
+from sql import get_database_schema, get_normalized_create_statement, execute_sql_query
 
 model_name = "Qwen/Qwen2.5-Coder-7B-Instruct-GPTQ-Int4"
 model = AutoModelForCausalLM.from_pretrained(
@@ -13,6 +13,7 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 
+model.eval()
 
 app = FastAPI(
     title="Text-2-SQL API",
@@ -32,7 +33,7 @@ class SchemaRequest(BaseModel):
 
 
 def create_prompt(question, filtered_tables):
-    schema = get_database_schema(filtered_tables)
+    schema = get_normalized_create_statement(filtered_tables)
     return f"""You are a data science expert. Below, you are provided with a database schema and a natural language question. Your task is to understand the schema and generate a valid PostgreSQL query to answer the question.
     
 Database Schema:
@@ -97,7 +98,7 @@ async def get_sql(request: QueryRequest):
             target=model.generate,
             kwargs={
                 **model_inputs,
-                "max_new_tokens": 512,
+                "max_new_tokens": 1024,
                 "streamer": streamer,
                 "stopping_criteria": [StopOnEvent(generation_controller["stop_event"])]
             }
@@ -112,16 +113,6 @@ async def get_sql(request: QueryRequest):
                 yield token
 
         return StreamingResponse(stream_tokens(streamer), media_type="text/plain")
-        # execute_query = None
-        # if "```sql" in response:
-        #     sql_query = response[response.rfind("```sql\n") + 7:response.rfind("```")]
-        #     execute_query = execute_sql_query(sql_query)
-
-        # return {
-        #     "status": "success",
-        #     "sql_query": response,
-        #     "execute_query": execute_query
-        # }
         
     except HTTPException:
         raise

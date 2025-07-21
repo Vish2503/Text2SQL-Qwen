@@ -2,12 +2,14 @@ import psycopg2
 from psycopg2 import sql, OperationalError
 import os
 from dotenv import load_dotenv
+import sqlparse
 
 load_dotenv()
 
 class DatabaseManager:
     def __init__(self):
         self.conn_params = {
+            "options":'-c statement_timeout=10s',
             "dbname": os.getenv("DB_NAME"),
             "user": os.getenv("DB_USER"),
             "password": os.getenv("DB_PASSWORD"),
@@ -121,13 +123,16 @@ class DatabaseManager:
     def execute_sql_query(self, sql_query):
         """
         Execute SQL query and return results with metadata
-        Handles both SELECT and DML queries
+        Handles SELECT queries
         """
+        def is_safe_sql(sql_query):
+            return sqlparse.parse(sql_query)[0].get_type() == "SELECT"
+        
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
                     # Handle SELECT queries
-                    if sql_query.strip().lower().startswith("select"):
+                    if is_safe_sql(sql_query):
                         cur.execute(sql_query)
                         columns = [desc[0] for desc in cur.description]
                         data = cur.fetchall()
@@ -168,6 +173,35 @@ class DatabaseManager:
                 schema_text.append("")  
         
         return "\n".join(schema_text)
+    
+    def get_normalized_create_statement(self, filtered_tables=None):
+        """Return database_schema as PostgreSQL normalized create table statements"""
+        schema = self.get_database_schema()
+        schema_text = []
+        for table in schema:
+            if filtered_tables is None or table['name'] in filtered_tables:
+                create_table_text = f"create table {table['name']} ("
+                
+                # Columns
+                columns = []
+                for column in table["columns"]:
+                    column_def = f"{column['name']} {column['type'].lower()}"
+                    columns.append(column_def)
+                create_table_text += ("\n" + ",\n".join(columns))
+                
+                # Primary keys
+                if table["primary_keys"]:
+                    create_table_text += (f",\nprimary key ({', '.join(table['primary_keys'])})")
+                
+                # Foreign keys
+                for fk in table["foreign_keys"]:
+                    create_table_text += (f",\nforeign key ({fk['column']}) references {fk['references']}")
+
+                create_table_text += "\n);"
+
+                schema_text.append(create_table_text)  
+        
+        return "\n".join(schema_text)
 
 # Singleton instance for the application
 db_manager = DatabaseManager()
@@ -176,6 +210,10 @@ db_manager = DatabaseManager()
 def get_database_schema(filtered_tables=None):
     """Public interface for schema retrieval"""
     return db_manager.get_formatted_schema(filtered_tables)
+
+def get_normalized_create_statement(filtered_tables=None):
+    """Public interface for schema retrieval"""
+    return db_manager.get_normalized_create_statement(filtered_tables)
 
 def execute_sql_query(sql_query):
     """Public interface for query execution"""

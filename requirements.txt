@@ -6,3 +6,9 @@ python-dotenv==1.1.0
 Requests==2.32.3
 streamlit==1.45.0
 transformers==4.51.3
+uvicorn==0.35.0
+sqlparse==0.5.3
+torch==2.7.1
+accelerate==1.9.0
+optimum==1.26.1
+auto-gptq==0.7.1
